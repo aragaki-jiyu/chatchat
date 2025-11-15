@@ -5,11 +5,7 @@ import java.net.*;
 import java.util.*;
 
 import java.awt.BorderLayout;
-import javax.swing.JFrame;
-import javax.swing.JOptionPane;
-import javax.swing.JScrollPane;
-import javax.swing.JTextArea;
-import javax.swing.JTextField;
+import javax.swing.*;
 
 public class ChatClient {
 
@@ -23,19 +19,13 @@ public class ChatClient {
     JTextField textField = new JTextField(50);
     JTextArea messageArea = new JTextArea(16, 50);
 
-    /**
-     * 서버 정보 읽기 및 GUI 초기화
-     */
     public ChatClient() {
 
-        // 기본값
         serverIp = "localhost";
         serverPort = 59001;
 
-        // 설정 파일
         File configFile = new File("server_info.dat");
 
-        // 파일이 있으면 읽기
         if (configFile.exists()) {
             try (BufferedReader reader = new BufferedReader(new FileReader(configFile))) {
                 String line = reader.readLine();
@@ -43,29 +33,14 @@ public class ChatClient {
                     String[] parts = line.trim().split("\\s+");
                     if (parts.length == 2) {
                         serverIp = parts[0];
-                        try {
-                            serverPort = Integer.parseInt(parts[1]);
-                        } catch (NumberFormatException e) {
-                            System.out.println("포트 번호가 잘못됨 → 기본값 9999 사용.");
-                            serverPort = 9999;
-                        }
+                        serverPort = Integer.parseInt(parts[1]);
                     }
                 }
-            } catch (IOException e) {
-                System.out.println("설정 파일 읽기 오류 → 기본값 사용.");
-            }
-        }
-        // 없으면 생성
-        else {
-            try (BufferedWriter writer = new BufferedWriter(new FileWriter(configFile))) {
-                writer.write(serverIp + " " + serverPort);
-                System.out.println("server_info.dat 생성됨(기본값).");
-            } catch (IOException e) {
-                System.out.println("설정 파일 생성 실패.");
+            } catch (Exception e) {
+                System.out.println("설정 파일 읽는 중 오류");
             }
         }
 
-        // GUI 설정
         textField.setEditable(false);
         messageArea.setEditable(false);
 
@@ -73,45 +48,86 @@ public class ChatClient {
         frame.getContentPane().add(new JScrollPane(messageArea), BorderLayout.CENTER);
         frame.pack();
 
-        textField.addActionListener(new ActionListener() {
-            public void actionPerformed(ActionEvent e) {
-                out.println(textField.getText());
-                textField.setText("");
-            }
+        textField.addActionListener(e -> {
+            out.println(textField.getText());
+            textField.setText("");
         });
     }
 
-    private String getName() {
-        return JOptionPane.showInputDialog(
-                frame,
-                "Choose a screen name:",
-                "Screen name selection",
-                JOptionPane.PLAIN_MESSAGE
-        );
+    private String[] showLoginDialog() {
+        JTextField idField = new JTextField();
+        JPasswordField pwField = new JPasswordField();
+        Object[] fields = {
+                "ID:", idField,
+                "Password:", pwField
+        };
+
+        int option = JOptionPane.showConfirmDialog(frame, fields, "Login", JOptionPane.OK_CANCEL_OPTION);
+        if (option == JOptionPane.OK_OPTION) {
+            return new String[]{idField.getText(), new String(pwField.getPassword())};
+        }
+        return null;
     }
 
-    /**
-     * 서버 접속 + 메시지 처리
-     */
+    private String[] showRegisterDialog() {
+        JTextField idField = new JTextField();
+        JPasswordField pwField = new JPasswordField();
+        Object[] fields = {
+                "New ID:", idField,
+                "New Password:", pwField
+        };
+
+        int option = JOptionPane.showConfirmDialog(frame, fields, "Register", JOptionPane.OK_CANCEL_OPTION);
+        if (option == JOptionPane.OK_OPTION) {
+            return new String[]{idField.getText(), new String(pwField.getPassword())};
+        }
+        return null;
+    }
+
     private void run() throws IOException {
         try {
-            System.out.println("🔌 Connecting to " + serverIp + ":" + serverPort);
             Socket socket = new Socket(serverIp, serverPort);
-
             in = new Scanner(socket.getInputStream());
             out = new PrintWriter(socket.getOutputStream(), true);
 
             while (in.hasNextLine()) {
                 String line = in.nextLine();
-                if (line.startsWith("SUBMITNAME")) {
-                    out.println(getName());
-                } else if (line.startsWith("NAMEACCEPTED")) {
-                    this.frame.setTitle("Chatter - " + line.substring(13));
+
+                if (line.equals("LOGIN")) {
+                    String[] user = showLoginDialog();
+                    if (user != null)
+                        out.println("LOGIN " + user[0] + " " + user[1]);
+                }
+
+                else if (line.equals("LOGINFAIL")) {
+                    JOptionPane.showMessageDialog(frame, "로그인 실패! 다시 시도하세요.");
+                }
+
+                else if (line.equals("NEEDREGISTER")) {
+                    JOptionPane.showMessageDialog(frame, "계정 없음! 새로 만들기.");
+                    String[] reg = showRegisterDialog();
+                    if (reg != null)
+                        out.println("REGISTER " + reg[0] + " " + reg[1]);
+                }
+
+                else if (line.startsWith("REGFAIL")) {
+                    JOptionPane.showMessageDialog(frame, "회원가입 실패: ID 중복");
+                }
+
+                else if (line.equals("REGISTERSUCCESS")) {
+                    JOptionPane.showMessageDialog(frame, "회원가입 완료! 로그인 해주세요.");
+                }
+
+                else if (line.startsWith("NAMEACCEPTED")) {
+                    frame.setTitle("ChatChat - " + line.substring(13));
                     textField.setEditable(true);
-                } else if (line.startsWith("MESSAGE")) {
+                }
+
+                else if (line.startsWith("MESSAGE")) {
                     messageArea.append(line.substring(8) + "\n");
                 }
             }
+
         } finally {
             frame.setVisible(false);
             frame.dispose();
@@ -119,12 +135,9 @@ public class ChatClient {
     }
 
     public static void main(String[] args) throws Exception {
-
         ChatClient client = new ChatClient();
-
         client.frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         client.frame.setVisible(true);
-
         client.run();
     }
 }
