@@ -216,6 +216,13 @@ public class ChatServer {
 						handleWhisper(msg);
 						continue;
 					}
+					//--
+					else if (msg.equals("LOGOUT")) {
+						out.println("BYE");
+						socket.close();
+						return;
+					}
+
 
 					for (PrintWriter writer : writers)
 						writer.println("MESSAGE " + id + ": " + msg);
@@ -264,4 +271,5 @@ public class ChatServer {
 		}
 	}
 }
+
 
