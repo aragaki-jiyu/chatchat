@@ -20,6 +20,14 @@ public class ChatClient {
     JTextArea messageArea = new JTextArea(16, 50);
 
     public ChatClient() {
+        JButton logoutBtn = new JButton("Logout");
+
+        JPanel southPanel = new JPanel(new BorderLayout());
+        southPanel.add(textField, BorderLayout.CENTER);
+        southPanel.add(logoutBtn, BorderLayout.EAST);
+
+        frame.getContentPane().add(southPanel, BorderLayout.SOUTH);
+
         serverIp = "localhost";
         serverPort = 59001;
 
@@ -47,7 +55,36 @@ public class ChatClient {
             out.println(textField.getText());
             textField.setText("");
         });
+
+
+        logoutBtn.addActionListener(e -> {
+            try {
+                out.println("LOGOUT");
+                textField.setEditable(false);
+
+                // 소켓 종료
+                in.close();
+                out.close();
+
+                // UI 초기화
+                messageArea.setText("");
+                frame.setTitle("ChatChat");
+
+                // 다시 로그인 요청
+                new Thread(() -> {
+                    try {
+                        run(); // 재접속
+                    } catch (Exception ex) {
+                        ex.printStackTrace();
+                    }
+                }).start();
+
+            } catch (Exception ex) {
+                ex.printStackTrace();
+            }
+        });
     }
+
 
     /** 로그인 창 (회원가입 버튼 포함) */
     private String[] showLoginDialog() {
@@ -192,6 +229,10 @@ public class ChatClient {
             while (in.hasNextLine()) {
                 String line = in.nextLine();
 
+                if (line.equals("BYE")) {
+                    break; // 서버가 LOGOUT 처리 후 보내는 메시지
+                }
+
                 if (line.equals("LOGIN")) {
                     String[] login = showLoginDialog();
                     if (login != null) {
@@ -263,5 +304,8 @@ public class ChatClient {
         client.run();
     }
 }
+
+}
+
 
 
