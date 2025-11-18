@@ -1,6 +1,8 @@
 import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
 import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -12,7 +14,7 @@ public class ChatServer {
 
 	private static File accountFile = new File("accounts.dat");
 
-	// id → [pw, name, email]
+	// id → [salt, hash, name, email]
 	private static Map<String, String[]> accounts = new HashMap<>();
 
 	private static Map<String, PrintWriter> userWriters = new HashMap<>();
@@ -29,6 +31,35 @@ public class ChatServer {
 		}
 	}
 
+
+	// ============================
+	//  PASSWORD HASH FUNCTIONS
+	// ============================
+
+	private static String bytesToHex(byte[] bytes) {
+		StringBuilder sb = new StringBuilder();
+		for (byte b : bytes) sb.append(String.format("%02x", b));
+		return sb.toString();
+	}
+
+	private static String generateSalt() {
+		byte[] salt = new byte[16];
+		new SecureRandom().nextBytes(salt);
+		return bytesToHex(salt);
+	}
+
+	private static String hashPassword(String password, String salt) throws Exception {
+		MessageDigest md = MessageDigest.getInstance("SHA-256");
+		md.update(salt.getBytes("UTF-8"));
+		byte[] hashed = md.digest(password.getBytes("UTF-8"));
+		return bytesToHex(hashed);
+	}
+
+
+	// ============================
+	//    LOAD ACCOUNTS
+	// ============================
+
 	private static void loadAccounts() {
 		accounts.clear();
 		if (!accountFile.exists()) {
@@ -39,26 +70,24 @@ public class ChatServer {
 		try (BufferedReader br = new BufferedReader(new FileReader(accountFile))) {
 			String line;
 			int lineNo = 0;
+
 			while ((line = br.readLine()) != null) {
 				lineNo++;
 				line = line.trim();
 				if (line.isEmpty()) continue;
-				// 공백 기준으로 토큰 분리 (연속 공백 무시)
+
+				// id salt:hash name email
 				String[] tok = line.split("\\s+");
-				if (tok.length == 2) {
-					// 기존 형식: id pw
+				if (tok.length >= 4 && tok[1].contains(":")) {
 					String id = tok[0];
-					String pw = tok[1];
-					accounts.put(id, new String[]{pw, "", ""});
-				} else if (tok.length >= 4) {
-					// 새 형식: id pw name email (name/email에 공백이 없다고 가정)
-					String id = tok[0];
-					String pw = tok[1];
+					String[] sh = tok[1].split(":");
+					String salt = sh[0];
+					String hash = sh[1];
 					String name = tok[2];
 					String email = tok[3];
-					accounts.put(id, new String[]{pw, name, email});
+					accounts.put(id, new String[]{salt, hash, name, email});
 				} else {
-					System.out.println("accounts.dat: 파싱 불가한 라인 " + lineNo + ": " + line);
+					System.out.println("⚠ 구버전 비밀번호 포맷 발견 — 무시됨: " + line);
 				}
 			}
 			System.out.println("accounts loaded: " + accounts.size());
@@ -67,74 +96,76 @@ public class ChatServer {
 		}
 	}
 
-	private static synchronized void saveAccount(String id, String pw, String name, String email) {
+
+	// ============================
+	//  SAVE ACCOUNT (HASHED)
+	// ============================
+
+	private static synchronized void saveAccount(String id, String salt, String hash, String name, String email) {
 		try (PrintWriter writer = new PrintWriter(new FileWriter(accountFile, true))) {
-			// 공백 문제를 피하려면 name/email에 공백이 있을 경우 처리 필요 — 지금은 간단히 띄우기
-			writer.println(id + " " + pw + " " + name + " " + email);
-			writer.flush();
+			writer.println(id + " " + salt + ":" + hash + " " + name + " " + email);
 		} catch (IOException e) {
 			System.out.println("계정 저장 실패: " + e);
 		}
 	}
 
 
+	// ============================
+	//         HANDLER
+	// ============================
+
 	private static class Handler implements Runnable {
+
 		private String id;
 		private Socket socket;
 		private Scanner in;
 		private PrintWriter out;
 
-		public Handler(Socket socket) { this.socket = socket; }
-
+		public Handler(Socket socket) {
+			this.socket = socket;
+		}
 
 		public void run() {
 			try {
 				in = new Scanner(socket.getInputStream());
 				out = new PrintWriter(socket.getOutputStream(), true);
 
-				// --- 처음에만 LOGIN 요청을 보냄 (한 번만) ---
 				out.println("LOGIN");
 
-				// 이제 클라이언트에서 보내는 명령들을 계속 수신하며 처리
 				while (true) {
-					if (!in.hasNextLine()) {
-						// 클라이언트가 연결을 끊었으면 루프 탈출
-						return;
-					}
+					if (!in.hasNextLine()) return;
 					String line = in.nextLine().trim();
 					if (line.isEmpty()) continue;
 
-					// ------------------ CHECKID 처리 ------------------
+					// ---------------- CHECKID ----------------
 					if (line.startsWith("CHECKID ")) {
-						String[] p = line.split(" ", 2);
-						if (p.length == 2) {
-							String checkId = p[1].trim();
-							boolean used;
-							synchronized (accounts) {
-								used = accounts.containsKey(checkId);
-							}
-							if (used) out.println("IDUSED");
-							else out.println("IDOK");
-						}
+						String checkId = line.substring(8).trim();
+						boolean used = accounts.containsKey(checkId);
+						out.println(used ? "IDUSED" : "IDOK");
 						continue;
 					}
 
 
-					// ------------------ REGISTER 처리 ------------------
+					// ---------------- REGISTER ----------------
 					if (line.startsWith("REGISTER ")) {
-						// 기대 형식: REGISTER id pw name email
 						String[] p = line.split(" ");
-						if (p.length >= 5) { // name/email에 공백이 없다 가정
+						if (p.length >= 5) {
+
 							String newId = p[1];
-							String newPw = p[2];
-							String newName = p[3];
-							String newEmail = p[4];
+							String pw = p[2];
+							String name = p[3];
+							String email = p[4];
+
 							synchronized (accounts) {
 								if (accounts.containsKey(newId)) {
 									out.println("REGFAIL DuplicateID");
 								} else {
-									accounts.put(newId, new String[]{newPw, newName, newEmail});
-									saveAccount(newId, newPw, newName, newEmail);
+									String salt = generateSalt();
+									String hash = hashPassword(pw, salt);
+
+									accounts.put(newId, new String[]{salt, hash, name, email});
+									saveAccount(newId, salt, hash, name, email);
+
 									out.println("REGISTERSUCCESS");
 								}
 							}
@@ -144,7 +175,8 @@ public class ChatServer {
 						continue;
 					}
 
-					// ------------------ LOGIN 처리 ------------------
+
+					// ---------------- LOGIN ----------------
 					if (line.startsWith("LOGIN ")) {
 						String[] parts = line.split(" ");
 						if (parts.length == 3) {
@@ -153,12 +185,16 @@ public class ChatServer {
 
 							if (!accounts.containsKey(loginId)) {
 								out.println("NEEDREGISTER");
-								// DON'T send LOGIN again here
 								continue;
 							}
 
-							String[] stored = accounts.get(loginId);
-							if (!stored[0].equals(loginPw)) {
+							String[] acc = accounts.get(loginId);
+							String salt = acc[0];
+							String storedHash = acc[1];
+
+							String inputHash = hashPassword(loginPw, salt);
+
+							if (!storedHash.equals(inputHash)) {
 								out.println("LOGINFAIL");
 								continue;
 							}
@@ -170,28 +206,19 @@ public class ChatServer {
 								}
 							}
 
-							// 로그인 성공하면 밖으로 나와 채팅 상태로 이동
-							this.id = loginId; // 또는 this.name = loginId (기존 사용명과 맞출 것)
-							break; // 로그인 성공 -> 채팅 루프 진입
-						} else {
-							out.println("LOGINFAIL");
-							continue;
+							this.id = loginId;
+							break;
 						}
+						continue;
 					}
 
-					// 다른 알려지지 않은 명령은 무시하거나 안내 메시지 전송
-					// out.println("MESSAGE Unknown command");
-
-
-					//---
 					if (line.equals("CANCELREGISTER")) {
 						out.println("LOGIN");
 						continue;
 					}
-
 				}
 
-				// 여기까지 도달하면 로그인 성공 (id 변수에 사용자 아이디 저장)
+				// 로그인 완료
 				synchronized (names) {
 					names.add(id);
 				}
@@ -200,74 +227,57 @@ public class ChatServer {
 				writers.add(out);
 
 				out.println("NAMEACCEPTED " + id);
+				for (PrintWriter w : writers)
+					w.println("MESSAGE " + id + " has joined");
 
-				for (PrintWriter writer : writers)
-					writer.println("MESSAGE " + id + " has joined");
-
-				// ------------------ 채팅 루프 ------------------
+				// 채팅 루프
 				while (true) {
 					if (!in.hasNextLine()) break;
-					String msg = in.nextLine();
-					if (msg == null) break;
-					msg = msg.trim();
-					if (msg.equalsIgnoreCase("/quit")) break;
-
+					String msg = in.nextLine().trim();
+					if (msg.equals("LOGOUT")) {
+						out.println("BYE");
+						break;
+					}
 					if (msg.startsWith("/w ")) {
 						handleWhisper(msg);
 						continue;
 					}
-					//--
-					else if (msg.equals("LOGOUT")) {
-						out.println("BYE");
-						socket.close();
-						return;
-					}
 
-
-					for (PrintWriter writer : writers)
-						writer.println("MESSAGE " + id + ": " + msg);
+					for (PrintWriter w : writers)
+						w.println("MESSAGE " + id + ": " + msg);
 				}
 
 			} catch (Exception e) {
 				System.out.println(e);
 			} finally {
-				// 접속 종료 처리
 				if (id != null) {
-					System.out.println(id + " disconnected");
 					names.remove(id);
+					writers.remove(out);
 					userWriters.remove(id);
-					writers.remove(out);
-					for (PrintWriter writer : writers)
-						writer.println("MESSAGE " + id + " has left");
-				} else {
-					// 로그인 전에 연결이 끊어졌을 경우 (id==null)
-					writers.remove(out);
+
+					for (PrintWriter w : writers)
+						w.println("MESSAGE " + id + " has left");
 				}
+
 				try { socket.close(); } catch (IOException e) {}
 			}
 		}
 
-
 		private void handleWhisper(String msg) {
-			String[] parts = msg.split(" ", 3);
-
-			if (parts.length < 3) {
+			String[] p = msg.split(" ", 3);
+			if (p.length < 3) {
 				out.println("MESSAGE Whisper 사용법: /w [유저명] [메시지]");
 				return;
 			}
 
-			String targetUser = parts[1];
-			String whisperMsg = parts[2];
-
-			PrintWriter targetWriter = userWriters.get(targetUser);
-
-			if (targetWriter == null) {
-				out.println("MESSAGE ⚠ 상대방 " + targetUser + " 님이 존재하지 않습니다.");
+			PrintWriter target = userWriters.get(p[1]);
+			if (target == null) {
+				out.println("MESSAGE ⚠ 상대방 없음");
 				return;
 			}
 
-			out.println("MESSAGE (귓속말→" + targetUser + ") " + whisperMsg);
-			targetWriter.println("MESSAGE (귓속말←" + id + ") " + whisperMsg);
+			out.println("MESSAGE (귓→" + p[1] + ") " + p[2]);
+			target.println("MESSAGE (귓←" + id + ") " + p[2]);
 		}
 	}
 }
