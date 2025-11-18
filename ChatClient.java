@@ -15,6 +15,7 @@ public class ChatClient {
     Scanner in;
     PrintWriter out;
 
+    // 로그인 다이얼로그 레퍼런스 (필요하면)
     JDialog loginDialog = null;
 
     JFrame frame = new JFrame("ChatChat");
@@ -54,9 +55,10 @@ public class ChatClient {
         });
     }
 
-    /** ---------------------- 로그인 창 ---------------------- */
-    private String[] showLoginDialog() {
+    /** ---------------------- 로그인 창 (이제 반환값 없음, 버튼에서 직접 로그인 전송) ---------------------- */
+    private void showLoginDialog() {
 
+        // 반드시 EDT에서 호출되어야 함. handleServerMessage 쪽에서 SwingUtilities.invokeLater로 호출함.
         loginDialog = new JDialog(frame, "Login", true);
         JDialog dialog = loginDialog;
 
@@ -85,26 +87,29 @@ public class ChatClient {
         dialog.add(new JLabel(" "));
         dialog.add(bottom);
 
-        final boolean[] loginClicked = {false};
-        final String[][] result = new String[1][];
-
+        // 로그인 버튼: EDT에서 직접 서버로 LOGIN 전송
         loginBtn.addActionListener(e -> {
-            loginClicked[0] = true;
-            result[0] = new String[]{idField.getText(), new String(pwField.getPassword())};
+            String id = idField.getText().trim();
+            String pw = new String(pwField.getPassword());
+            if (id.isEmpty() || pw.isEmpty()) {
+                JOptionPane.showMessageDialog(frame, "아이디와 비밀번호를 입력하세요.");
+                return;
+            }
+            if (out != null) {
+                out.println("LOGIN " + id + " " + pw);
+            }
             dialog.dispose();
         });
 
+        // 레지스터 버튼: 현재 다이얼로그를 숨기고(모달 창 사이클), 회원가입 창으로 이동
         registerBtn.addActionListener(e -> {
             dialog.setVisible(false);
-            showRegisterDialog();
+            showRegisterDialog(); // showRegisterDialog도 EDT에서 동작하도록 설계되어 있음
             dialog.setVisible(true);
         });
 
         dialog.setLocationRelativeTo(frame);
         dialog.setVisible(true);
-
-        if (!loginClicked[0]) return null;
-        return result[0];
     }
 
     /** ---------------------- 회원가입 창 ---------------------- */
@@ -184,28 +189,24 @@ public class ChatClient {
     /** ---------------------- 서버 메시지 처리 ---------------------- */
     private void handleServerMessage(String line) {
 
-        if (line.equals("BYE")) {///
+        if (line.equals("BYE")) {
             SwingUtilities.invokeLater(() -> frame.dispose());
-            //continue; // return 절대 금지
+            return;
         }
 
         if (line.equals("LOGIN")) {
-            String[] login = showLoginDialog();
-            if (login != null)
-                out.println("LOGIN " + login[0] + " " + login[1]);
+            // UI는 반드시 EDT에서 띄움 — 수신 스레드에서 직접 다이얼로그를 띄우지 않음
+            SwingUtilities.invokeLater(this::showLoginDialog);
+            return;
         }
 
         else if (line.equals("LOGINFAIL")) {
             SwingUtilities.invokeLater(() ->
                     JOptionPane.showMessageDialog(frame, "❌ 로그인 실패! 다시 시도하세요.")
             );
-
-            // 로그인 창 다시 띄우기
-            SwingUtilities.invokeLater(() -> {
-                String[] login = showLoginDialog();
-                if (login != null)
-                    out.println("LOGIN " + login[0] + " " + login[1]);
-            });
+            // 로그인 실패 시 다시 로그인 창 띄우기 (EDT에서)
+            SwingUtilities.invokeLater(this::showLoginDialog);
+            return;
         }
 
 
@@ -214,18 +215,21 @@ public class ChatClient {
                     JOptionPane.showMessageDialog(frame, "❌ 계정이 존재하지 않습니다.")
             );
             SwingUtilities.invokeLater(this::showRegisterDialog);
+            return;
         }
 
         else if (line.equals("REGISTERSUCCESS")) {
             SwingUtilities.invokeLater(() ->
                     JOptionPane.showMessageDialog(frame, "✔ 회원가입 완료! 다시 로그인 해주세요.")
             );
+            return;
         }
 
         else if (line.startsWith("REGFAIL")) {
             SwingUtilities.invokeLater(() ->
                     JOptionPane.showMessageDialog(frame, "❌ 회원가입 실패: " + line.substring(7))
             );
+            return;
         }
 
         else if (line.startsWith("NAMEACCEPTED")) {
@@ -234,6 +238,7 @@ public class ChatClient {
                 frame.setTitle("ChatChat - " + id);
                 textField.setEditable(true);
             });
+            return;
         }
 
         else if (line.startsWith("MESSAGE")) {
@@ -241,6 +246,7 @@ public class ChatClient {
             SwingUtilities.invokeLater(() ->
                     messageArea.append(msg + "\n")
             );
+            return;
         }
 
         else if (line.equals("IDOK")) {
@@ -248,6 +254,7 @@ public class ChatClient {
             SwingUtilities.invokeLater(() ->
                     JOptionPane.showMessageDialog(frame, "✔ 사용 가능한 ID입니다!")
             );
+            return;
         }
 
         else if (line.equals("IDUSED")) {
@@ -255,7 +262,11 @@ public class ChatClient {
             SwingUtilities.invokeLater(() ->
                     JOptionPane.showMessageDialog(frame, "❌ 이미 사용 중인 ID입니다!")
             );
+            return;
         }
+
+        // 기타: 로그용
+        System.out.println("Unhandled from server: " + line);
     }
 
     /** ---------------------- 클라이언트 실행 ---------------------- */
@@ -265,7 +276,7 @@ public class ChatClient {
         in = new Scanner(socket.getInputStream());
         out = new PrintWriter(socket.getOutputStream(), true);
 
-        // 핵심: 수신 스레드 분리
+        // 핵심: 수신 스레드 분리 (이 스레드는 UI와 분리되어 동작)
         new Thread(() -> {
             try {
                 while (in.hasNextLine()) {
@@ -285,5 +296,9 @@ public class ChatClient {
         client.run();
     }
 }
+
+
+}
+
 
 
